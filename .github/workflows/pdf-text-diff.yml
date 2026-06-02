@@ -1,0 +1,38 @@
+name: PDF Textual Diff
+
+on:
+  pull_request:
+    paths:
+      - '**.pdf'
+
+jobs:
+  text-diff:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Poppler Utilities
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
+      - name: Extract and Generate Text Diff
+        run: |
+          git show origin/${{ github.base_ref }}:documents/proposal.pdf > base.pdf
+          pdftotext base.pdf base.txt
+          pdftotext documents/proposal.pdf head.txt
+          diff -u base.txt head.txt > text_diff.txt || true
+          cat text_diff.txt
+        # Note: Replace documents/proposal.pdf with your actual PDF path.
+
+      - name: Upload Text Diff Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-text-diff
+          path: text_diff.txt
