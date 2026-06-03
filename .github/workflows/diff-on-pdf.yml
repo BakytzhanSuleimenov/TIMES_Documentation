@@ -5,6 +5,93 @@ on:
     paths:
       - '**.pdf'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  visual-diff:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Changed PDF Files
+        id: changed-pdfs
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            **.pdf
+
+      - name: Install diff-pdf Engine Dependencies
+        if: steps.changed-pdfs.outputs.any_changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make automake g++ libpoppler-glib-dev poppler-utils libwxgtk3.2-dev
+
+      - name: Build diff-pdf tool
+        if: steps.changed-pdfs.outputs.any_changed == 'true'
+        run: |
+          git clone https://github.com/vslavik/diff-pdf.git
+          cd diff-pdf
+          ./bootstrap
+          ./configure
+          make
+          sudo make install
+
+      - name: Generate Visual Diffs
+        if: steps.changed-pdfs.outputs.any_changed == 'true'
+        env:
+          CHANGED_FILES: ${{ steps.changed-pdfs.outputs.all_changed_files }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          mkdir -p pdf-diffs-output
+          
+          # Handle cases where the branch is brand new and has no previous commits on GitHub
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
+            echo "A new branch was pushed with no prior commit history on GitHub. Skipping comparative layout diffs."
+            exit 0
+          fi
+          
+          for file in ${CHANGED_FILES}; do
+            echo "Processing visual differences for: $file"
+            
+            safe_name=$(echo "$file" | tr '/' '_')
+            mkdir -p "temp_diff"
+            
+            # Extract the old file's exact state before the current push
+            if git show "$BEFORE_SHA:$file" > "temp_diff/base.pdf" 2>/dev/null; then
+              echo "Retrieved previous version of $file"
+            else
+              echo "Could not find a previous version of $file"
+            fi
+            
+            if [ ! -s "temp_diff/base.pdf" ]; then
+              echo "File $file is newly added to this branch. No historic document to compare. Skipping diff."
+              continue
+            fi
+            
+            echo "Generating visual layout differences for $file..."
+            diff-pdf --skip-identical --output-diff="pdf-diffs-output/diff_${safe_name}" "temp_diff/base.pdf" "$file" || true
+          done
+
+      - name: Upload Visual Diff Results
+        if: steps.changed-pdfs.outputs.any_changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-pdf-diffs
+          path: pdf-diffs-output/
+          if-no-files-found: ignorename: Automated PDF Visual Diff
+
+on:
+  push:
+    paths:
+      - '**.pdf'
+
 jobs:
   visual-diff:
     runs-on: ubuntu-latest
