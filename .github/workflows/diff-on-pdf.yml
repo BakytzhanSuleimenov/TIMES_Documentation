@@ -1,12 +1,12 @@
-name: Automated PDF Textual Diff
+name: Automated PDF Visual Diff
 
 on:
-  push:
+  pull_request:
     paths:
       - '**.pdf'
 
 jobs:
-  text-diff:
+  visual-diff:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout PR Branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # Retain full history to grab historical versions
 
       - name: Get Changed PDF Files
         id: changed-pdfs
@@ -24,47 +24,50 @@ jobs:
           files: |
             **.pdf
 
-      - name: Install Poppler Utilities
+      - name: Install diff-pdf Engine
         run: |
           sudo apt-get update
-          sudo apt-get install -y poppler-utils
+          sudo apt-get install -y make automake g++ libpoppler-glib-dev poppler-utils libwxgtk3.2-dev
 
-      - name: Generate Consolidated Text Diff
+      - name: Build diff-pdf tool
+        run: |
+          git clone https://github.com/vslavik/diff-pdf.git
+          cd diff-pdf
+          ./bootstrap
+          ./configure
+          make
+          sudo make install
+
+      - name: Generate Visual Diffs
         if: steps.changed-pdfs.outputs.any_changed == 'true'
         env:
           CHANGED_FILES: ${{ steps.changed-pdfs.outputs.all_changed_files }}
         run: |
-          touch unified_diff.patch
+          mkdir -p pdf-diffs-output
           
           for file in ${CHANGED_FILES}; do
-            echo "==== Generating Text Diff for: $file ====" >> unified_diff.patch
+            echo "Processing visual differences for: $file"
             
-            mkdir -p temp_text
+            # Form clean names for directories and temporary storage
+            safe_name=$(echo "$file" | tr '/' '_')
+            mkdir -p "temp_diff"
             
-            # Fetch base file version
-            git show "origin/${{ github.base_ref }}:$file" > temp_text/base.pdf 2>/dev/null || true
+            # Fetch the base reference (what the file looked like before your changes)
+            git show "origin/${{ github.base_ref }}:$file" > "temp_diff/base.pdf" 2>/dev/null || true
             
-            if [ ! -s temp_text/base.pdf ]; then
-              echo "[New PDF File Added (No Previous History)]" >> unified_diff.patch
-              echo "" >> unified_diff.patch
+            # If the file didn't exist in the base branch, write a placeholder or skip
+            if [ ! -s "temp_diff/base.pdf" ]; then
+              echo "File $file is newly added. No base version to compare. Skipping diff."
               continue
             fi
             
-            # Convert both base and head versions to plain text
-            pdftotext temp_text/base.pdf temp_text/base.txt
-            pdftotext "$file" temp_text/head.txt
-            
-            # Perform text comparison and append output
-            diff -u temp_text/base.txt temp_text/head.txt >> unified_diff.patch || true
-            echo -e "\n\n" >> unified_diff.patch
+            # Run diff-pdf using the built binary
+            diff-pdf --skip-identical --output-diff="pdf-diffs-output/diff_${safe_name}" "temp_diff/base.pdf" "$file" || true
           done
-          
-          # Print output summary in Action log
-          cat unified_diff.patch
 
-      - name: Upload Text Diff Artifact
+      - name: Upload Visual Diff Results
         if: steps.changed-pdfs.outputs.any_changed == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: textual-pdf-diffs
-          path: unified_diff.patch
+          name: visual-pdf-diffs
+          path: pdf-diffs-output/
